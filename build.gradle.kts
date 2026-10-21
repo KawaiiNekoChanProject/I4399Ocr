@@ -18,7 +18,7 @@ val resources2kt = tasks.register<Resources2KtTask>("resources2kt") {
     className.set("Resouces")
     packageName.set("${rootProject.group}")
 
-    resourceDir.set(layout.projectDirectory.dir("src/commonMain/resources"))
+    resourceDir.set(layout.projectDirectory.dir("resources_model"))
     outputDir.set(layout.buildDirectory.dir("generated/sources/resources/commonMain/kotlin"))
 }
 
