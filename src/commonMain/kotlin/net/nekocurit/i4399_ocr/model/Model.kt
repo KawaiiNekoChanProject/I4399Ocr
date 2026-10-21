@@ -120,7 +120,7 @@ data class Model(
                 0xE3.toByte(), 0xD0.toByte(), 0xD6.toByte(), 0xB5.toByte(), 0x40,
             )
 
-            private fun tailParams(data: ByteArray, maxValues: Int): List<Int> {
+            fun tailParams(data: ByteArray, maxValues: Int = 16): List<Int> {
                 val start = if (data.size > 512) data.size - 512 else 0
                 val values = ArrayList<Int>()
                 var i = start

@@ -12,11 +12,7 @@ import kotlin.math.sqrt
  * 支持：8 位精度、1/3 个分量、4:4:4 / 4:2:2 / 4:2:0 等任意采样因子、
  * Huffman 编码、DRI/RSTn 重启标记。渐进式 JPEG 不支持（4399 验证码为基线 JPEG）。
  */
-internal fun decodeJpeg(data: ByteArray): GrayImage? = try {
-    JpegDecoder(data).decode()
-} catch (_: Exception) {
-    null
-}
+internal fun decodeJpeg(data: ByteArray): GrayImage = JpegDecoder(data).decode()
 
 private val ZIGZAG = intArrayOf(
     0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5,
@@ -154,7 +150,7 @@ class JpegDecoder(private val data: ByteArray) {
     var restartInterval = 0
     var adobeTransform = -1
 
-    fun decode(): GrayImage? {
+    fun decode(): GrayImage {
         var p = 2
         while (p + 1 < data.size) {
             while (p < data.size && data.u8(p) != 0xFF) p++
@@ -170,7 +166,8 @@ class JpegDecoder(private val data: ByteArray) {
             if (segEnd > data.size) break
             when (marker) {
                 0xC0, 0xC1 -> parseSof(p + 2, segEnd)
-                0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF -> return null
+                0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF ->
+                    error("jpeg: unsupported SOF marker 0x${marker.toString(16)}")
                 0xC4 -> parseDht(p + 2, segEnd)
                 0xDB -> parseDqt(p + 2, segEnd)
                 0xDD -> if (segEnd >= p + 4) restartInterval = data.u16be(p + 2)
@@ -185,7 +182,8 @@ class JpegDecoder(private val data: ByteArray) {
             }
             p = segEnd
         }
-        if (comps.isEmpty() || width <= 0 || height <= 0) return null
+        if (comps.isEmpty()) error("jpeg: missing SOF")
+        if (width <= 0 || height <= 0) error("jpeg: invalid dimensions ${width}x$height")
         return this.toGray()
     }
 

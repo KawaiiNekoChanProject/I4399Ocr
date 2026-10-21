@@ -1,5 +1,3 @@
-import org.jetbrains.kotlin.gradle.dsl.KotlinMultiplatformExtension
-
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
 
@@ -66,9 +64,9 @@ mavenPublishing {
     if (privateKey != null) signAllPublications()
     coordinates("io.github.kawaiinekochanproject", project.name, project.version.toString())
     pom {
-        name.set("WPLauncherHelper")
-        description.set("A Kotlin multiplatform library for WPLauncher api.")
-        url.set("https://github.com/KawaiiNekoChanProject/WPLauncherHelper")
+        name.set("I4399Ocr")
+        description.set("A dedicated graphics recognition library for 4399.")
+        url.set("https://github.com/KawaiiNekoChanProject/I4399Ocr")
         licenses {
             license {
                 name.set("Zero-Clause BSD License")
@@ -82,9 +80,9 @@ mavenPublishing {
             }
         }
         scm {
-            connection.set("scm:git:https://github.com/KawaiiNekoChanProject/WPLauncherHelper.git")
-            developerConnection.set("scm:git:ssh://git@github.com/KawaiiNekoChanProject/WPLauncherHelper.git")
-            url.set("https://github.com/KawaiiNekoChanProject/WPLauncherHelper")
+            connection.set("scm:git:https://github.com/KawaiiNekoChanProject/I4399Ocr.git")
+            developerConnection.set("scm:git:ssh://git@github.com/KawaiiNekoChanProject/I4399Ocr.git")
+            url.set("https://github.com/KawaiiNekoChanProject/I4399Ocr")
         }
     }
 }

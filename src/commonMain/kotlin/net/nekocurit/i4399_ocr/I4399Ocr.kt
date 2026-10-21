@@ -7,20 +7,19 @@ import net.nekocurit.i4399_ocr.utils.recognize
 object I4399Ocr {
 
     /**
-     * 识别图片字节（JPG/PNG/BMP/PGM）
+     * 识别图片字节
+     *
+     * @param image 图片字节, 仅支持 `jpeg`
      */
-    fun ocr(image: ByteArray): String? {
-        val gray = decodeJpeg(image) ?: return null
-        return ocr(gray)
-    }
+    fun ocr(image: ByteArray): String = ocr(decodeJpeg(image))
 
     /**
-     * 识别已解码的 8 位灰度图。
+     * 识别已解码的 8 位灰度图
+     *
+     * @param gray 灰度图数据
      */
-    fun ocr(gray: GrayImage): String {
-        val first = recognize(Models.model1, gray)
-        if (first.length == 4) return first
-        return recognize(Models.model2, gray)
-    }
+    fun ocr(gray: GrayImage) = recognize(Models.model1, gray).takeIf { it.length == 4 }
+        ?: recognize(Models.model2, gray).takeIf { it.length == 4 }
+        ?: error("识别失败")
 
 }
