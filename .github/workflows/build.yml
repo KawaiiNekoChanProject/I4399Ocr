@@ -1,0 +1,36 @@
+#file: noinspection SpellCheckingInspection
+name: Build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, '[SKIP CI]')"
+
+    steps:
+      - name: Download Source
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup JDK
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'temurin'
+          java-version: '25'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v5.0.0
+
+      - name: Build
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSWORD: ${{ secrets.GPG_PASSWORD }}
+        run: |
+          chmod +x ./gradlew
+          ./gradlew publish \
+            -PmavenCentralUsername=${{ secrets.MAVEN_USERNAME }} \
+            -PmavenCentralPassword=${{ secrets.MAVEN_PASSWORD }}

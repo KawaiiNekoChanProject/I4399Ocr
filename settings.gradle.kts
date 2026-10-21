@@ -1,0 +1,1 @@
+rootProject.name = "i4399-ocr"
