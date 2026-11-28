@@ -1,120 +1,143 @@
+@file:OptIn(ExperimentalUnsignedTypes::class)
 package net.nekocurit.i4399_ocr.utils
 
 import net.nekocurit.i4399_ocr.model.Model
-import net.nekocurit.i4399_ocr.model.Model.Companion.CAP_MAX
+import net.nekocurit.i4399_ocr.model.Model.Companion.MAX_CAPACITY
 import kotlin.math.abs
 
-internal const val SRC_W = 160
-internal const val SRC_H = 48
-internal const val CONTENT_H = 31
-private const val OCR_THR = 0.50
-private const val MAX_CHARS = 4
+internal const val SOURCE_WIDTH = 160
+internal const val SOURCE_HEIGHT = 48
+internal const val CONTENT_HEIGHT = 31
+private const val OCR_THRESHOLD = 0.50
+private const val MAX_CHARACTERS = 4
 
-private val DX_TAB = intArrayOf(
+private val COLUMN_SHIFT_TABLE = intArrayOf(
     2, 2, 5, 2, 2, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
     4, 4, 3, 3, 3, 3, 3, 2, 2, 2, 2, 2, 2, 2, 2,
     0,
 )
 
-private class Candidate(val score: Double, val label: Char, val i: Int, val j: Int)
+private class Candidate(
+    val score: Double,
+    val label: Char,
+    val windowColumn: Int,
+    val windowRow: Int,
+)
 
 /** 对灰度图执行一次识别；返回识别出的字符（0..4 个）。 */
 internal fun recognize(model: Model, gray: GrayImage): String {
-    val cfg = model.config
-    val img = ByteArray(SRC_W * SRC_H)
-    val srcW = (gray.width + 15).coerceAtMost(SRC_W)
-    img.fill(0xFF.toByte())
+    val config = model.config
+    val image = ByteArray(SOURCE_WIDTH * SOURCE_HEIGHT)
+    val sourceWidth = (gray.width + 15).coerceAtMost(SOURCE_WIDTH)
+    image.fill(0xFF.toByte())
 
     // 二值化 + 垂直翻转 + 逐行水平剪切。
-    for (y in 0 until CONTENT_H) {
-        val sy = 31 - y
-        if (sy < 0 || sy >= gray.height) continue
-        val dx = DX_TAB[y]
-        for (x in 0 until srcW) {
-            val sx = x - dx
-            if (sx < 0 || sx >= gray.width) continue
-            if (gray.pixels.u8(sy * gray.width + sx) < cfg.thr) img[y * SRC_W + x] = 0
+    for (outputRow in 0 until CONTENT_HEIGHT) {
+        val sourceRow = 31 - outputRow
+        if (sourceRow < 0 || sourceRow >= gray.height) continue
+        val columnShift = COLUMN_SHIFT_TABLE[outputRow]
+        for (outputColumn in 0 until sourceWidth) {
+            val sourceColumn = outputColumn - columnShift
+            if (sourceColumn < 0 || sourceColumn >= gray.width) continue
+            if (gray.pixels.readUByte(sourceRow * gray.width + sourceColumn) <
+                config.threshold
+            ) {
+                image[outputRow * SOURCE_WIDTH + outputColumn] = 0
+            }
         }
     }
 
-    val gw = cfg.w
-    val gh = cfg.h
-    val win = ByteArray(CAP_MAX)
-    val candidates = ArrayList<Candidate>(SRC_W * SRC_H)
-    val radSame = cfg.nms
-    val radDiff = if (cfg.nms > 2) cfg.nms - 2 else cfg.nms
+    val gridWidth = config.width
+    val gridHeight = config.height
+    val window = ByteArray(MAX_CAPACITY)
+    val candidates = ArrayList<Candidate>(SOURCE_WIDTH * SOURCE_HEIGHT)
+    val sameLabelRadius = config.nonMaxSuppressionRadius
+    val differentLabelRadius =
+        if (config.nonMaxSuppressionRadius > 2) config.nonMaxSuppressionRadius - 2
+        else config.nonMaxSuppressionRadius
 
-    for (j in 0..20) {
-        if (j + gh > SRC_H) break
-        for (i in 0..(srcW - gw)) {
-            var bg = 0
-            for (y in 0 until gh) {
-                val row = (j + y) * SRC_W + i
-                val wrow = y * gw
-                for (x in 0 until gw) {
-                    val v = img[row + x]
-                    win[wrow + x] = v
-                    if (v == 0xFF.toByte()) bg++
+    for (windowRow in 0..20) {
+        if (windowRow + gridHeight > SOURCE_HEIGHT) break
+        for (windowColumn in 0..(sourceWidth - gridWidth)) {
+            var backgroundCount = 0
+            for (row in 0 until gridHeight) {
+                val sourceRowIndex = (windowRow + row) * SOURCE_WIDTH + windowColumn
+                val windowRowIndex = row * gridWidth
+                for (column in 0 until gridWidth) {
+                    val pixel = image[sourceRowIndex + column]
+                    window[windowRowIndex + column] = pixel
+                    if (pixel == 0xFF.toByte()) backgroundCount++
                 }
             }
-            if (bg < 200) continue
+            if (backgroundCount < 200) continue
 
-            var best = 2.0
+            var bestScore = 2.0
             var bestLabel = '\u0000'
-            for (t in model.templates) {
-                val n1 = t.points.size
-                if (n1 < 40) continue
-                var m1 = 0
-                for (q in t.points.indices) {
-                    val pt = t.points[q]
-                    if (pt <= cfg.cap && win[pt - 1] == 0xFF.toByte()) m1++
-                }
-                if (m1 > (0.545 * n1 + 0.5).toInt()) continue
-                var m4 = 0
-                if (t.f4.isNotEmpty()) {
-                    for (q in t.f4.indices) {
-                        val pt = t.f4[q]
-                        if (pt <= cfg.cap && win[pt - 1] == 0xFF.toByte()) m4++
+            for (template in model.templates) {
+                val pointCount = template.points.size
+                if (pointCount < 40) continue
+                var pointMatches = 0
+                for (pointIndex in template.points.indices) {
+                    val point = template.points[pointIndex].toInt()
+                    if (point <= config.capacity && window[point - 1] == 0xFF.toByte()) {
+                        pointMatches++
                     }
                 }
-                val total = n1 + t.f4.size
-                val r = (m1 + m4).toDouble() / total.toDouble() - 0.1 * total / 200.0
-                if (r < best) {
-                    best = r
-                    bestLabel = t.label
+                if (pointMatches > (0.545 * pointCount + 0.5).toInt()) continue
+                var feature4Matches = 0
+                if (template.feature4.isNotEmpty()) {
+                    for (featureIndex in template.feature4.indices) {
+                        val point = template.feature4[featureIndex].toInt()
+                        if (point <= config.capacity && window[point - 1] == 0xFF.toByte()) {
+                            feature4Matches++
+                        }
+                    }
+                }
+                val total = pointCount + template.feature4.size
+                val score = (pointMatches + feature4Matches).toDouble() / total.toDouble() -
+                    0.1 * total / 200.0
+                if (score < bestScore) {
+                    bestScore = score
+                    bestLabel = template.label
                 }
             }
-            if (bestLabel != '\u0000' && best < OCR_THR) {
-                candidates.add(Candidate(best, bestLabel, i, j))
+            if (bestLabel != '\u0000' && bestScore < OCR_THRESHOLD) {
+                candidates.add(Candidate(bestScore, bestLabel, windowColumn, windowRow))
             }
         }
     }
 
     candidates.sortBy { it.score }
 
-    val selected = ArrayList<Candidate>(MAX_CHARS)
-    for (c in candidates) {
-        if (selected.size >= MAX_CHARS) break
-        var ok = true
-        for (s in selected) {
-            val rad = if (c.label == s.label) radSame else radDiff
-            if (abs(c.i - s.i) < rad && abs(c.j - s.j) < rad) {
-                ok = false
+    val selected = ArrayList<Candidate>(MAX_CHARACTERS)
+    for (candidate in candidates) {
+        if (selected.size >= MAX_CHARACTERS) break
+        var accepted = true
+        for (selectedCandidate in selected) {
+            val radius =
+                if (candidate.label == selectedCandidate.label) sameLabelRadius
+                else differentLabelRadius
+            if (abs(candidate.windowColumn - selectedCandidate.windowColumn) < radius &&
+                abs(candidate.windowRow - selectedCandidate.windowRow) < radius
+            ) {
+                accepted = false
                 break
             }
         }
-        if (ok) selected.add(c)
+        if (accepted) selected.add(candidate)
     }
 
     // 按窗口横坐标从左到右输出（插入排序，保持原实现语义）。
-    for (i in 1 until selected.size) {
-        val t = selected[i]
-        var j = i
-        while (j > 0 && selected[j - 1].i > t.i) {
-            selected[j] = selected[j - 1]
-            j--
+    for (index in 1 until selected.size) {
+        val current = selected[index]
+        var scanIndex = index
+        while (scanIndex > 0 && selected[scanIndex - 1].windowColumn > current.windowColumn) {
+            selected[scanIndex] = selected[scanIndex - 1]
+            scanIndex--
         }
-        selected[j] = t
+        selected[scanIndex] = current
     }
-    return buildString(selected.size) { for (c in selected) append(c.label) }
+    return buildString(selected.size) {
+        for (candidate in selected) append(candidate.label)
+    }
 }
