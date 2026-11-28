@@ -17,7 +17,7 @@ val resources2kt = tasks.register<Resources2KtTask>("resources2kt") {
     description = ""
 
     className.set("Resouces")
-    packageName.set("${rootProject.group}")
+    packageName.set("net.nekocurit.i4399_ocr")
 
     resourceDir.set(layout.projectDirectory.dir("resources_model"))
     outputDir.set(layout.buildDirectory.dir("generated/sources/resources/commonMain/kotlin"))
