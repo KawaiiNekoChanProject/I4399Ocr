@@ -37,6 +37,11 @@ kotlin {
         commonMain {
             kotlin.srcDir(resources2kt.flatMap { it.outputDir })
         }
+        commonTest {
+            dependencies {
+                implementation(kotlin("test"))
+            }
+        }
     }
 }
 

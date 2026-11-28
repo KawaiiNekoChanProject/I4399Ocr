@@ -14,17 +14,17 @@ import kotlin.math.sqrt
  */
 internal fun decodeJpeg(data: ByteArray): GrayImage = JpegDecoder(data).decode()
 
-private val ZIGZAG = intArrayOf(
+private val ZIGZAG_ORDER = intArrayOf(
     0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5,
     12, 19, 26, 33, 40, 48, 41, 34, 27, 20, 13, 6, 7, 14, 21, 28,
     35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51,
     58, 59, 52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63,
 )
 
-private val IDCT_BASIS: Array<DoubleArray> = Array(8) { x ->
-    DoubleArray(8) { u ->
-        val cu = if (u == 0) 1.0 / sqrt(2.0) else 1.0
-        cu * cos((2 * x + 1) * u * PI / 16.0) / 2.0
+private val INVERSE_DCT_BASIS: Array<DoubleArray> = Array(8) { spatialX ->
+    DoubleArray(8) { frequencyX ->
+        val normalization = if (frequencyX == 0) 1.0 / sqrt(2.0) else 1.0
+        normalization * cos((2 * spatialX + 1) * frequencyX * PI / 16.0) / 2.0
     }
 }
 
@@ -35,389 +35,483 @@ private class JpegHuffman(counts: IntArray, val symbols: IntArray) {
 
     init {
         var total = 0
-        for (i in 1..16) {
-            count[i] = counts[i - 1]
-            total += count[i]
+        for (codeLength in 1..16) {
+            count[codeLength] = counts[codeLength - 1]
+            total += count[codeLength]
         }
         var code = 0
-        var index = 0
-        for (len in 1..16) {
-            code = (code + count[len - 1]) shl 1
-            firstCode[len] = code
-            firstIndex[len] = index
-            index += count[len]
+        var symbolIndex = 0
+        for (codeLength in 1..16) {
+            code = (code + count[codeLength - 1]) shl 1
+            firstCode[codeLength] = code
+            firstIndex[codeLength] = symbolIndex
+            symbolIndex += count[codeLength]
         }
-        if (index != symbols.size) throw IllegalArgumentException("jpeg: bad huffman table")
+        if (symbolIndex != symbols.size) {
+            throw IllegalArgumentException("jpeg: bad huffman table")
+        }
     }
 
-    fun decode(bits: JpegBits): Int {
+    fun decode(bitReader: JpegBits): Int {
         var code = 0
-        for (len in 1..16) {
-            code = (code shl 1) or bits.bit()
-            val idx = code - firstCode[len]
-            if (idx in 0 until count[len]) return symbols[firstIndex[len] + idx]
+        for (codeLength in 1..16) {
+            code = (code shl 1) or bitReader.readBit()
+            val symbolIndex = code - firstCode[codeLength]
+            if (symbolIndex in 0 until count[codeLength]) {
+                return symbols[firstIndex[codeLength] + symbolIndex]
+            }
         }
         throw IllegalArgumentException("jpeg: invalid huffman code")
     }
 }
 
-private class JpegBits(private val data: ByteArray, var pos: Int) {
-    var buf = 0
-    var cnt = 0
+private class JpegBits(private val data: ByteArray, var position: Int) {
+    var byteBuffer = 0
+    var bitCount = 0
     var pendingMarker = -1
-    var pendingMarkerPos = -1
-    var pendingMarkerCodePos = -1
+    var pendingMarkerPosition = -1
+    var pendingMarkerCodePosition = -1
 
-    fun bit(): Int {
-        if (cnt == 0) {
-            buf = nextByte()
-            cnt = 8
+    fun readBit(): Int {
+        if (bitCount == 0) {
+            byteBuffer = readNextByte()
+            bitCount = 8
         }
-        cnt--
-        return (buf ushr cnt) and 1
+        bitCount--
+        return (byteBuffer ushr bitCount) and 1
     }
 
-    fun bits(n: Int): Int {
-        var v = 0
-        repeat(n) { v = (v shl 1) or bit() }
-        return v
+    fun readBits(bitCount: Int): Int {
+        var value = 0
+        repeat(bitCount) { value = (value shl 1) or readBit() }
+        return value
     }
 
     fun align() {
-        cnt = 0
+        bitCount = 0
     }
 
-    private fun nextByte(): Int {
-        if (pos >= data.size) return 0
-        val start = pos
-        val b = data.u8(pos++)
-        if (b != 0xFF) return b
-        while (pos < data.size && data.u8(pos) == 0xFF) pos++
-        if (pos >= data.size) return 0
-        val b2 = data.u8(pos)
-        if (b2 == 0) {
-            pos++
+    private fun readNextByte(): Int {
+        if (position >= data.size) return 0
+        val start = position
+        val firstByte = data.readUByte(position++)
+        if (firstByte != 0xFF) return firstByte
+        while (position < data.size && data.readUByte(position) == 0xFF) position++
+        if (position >= data.size) return 0
+        val secondByte = data.readUByte(position)
+        if (secondByte == 0) {
+            position++
             return 0xFF
         }
-        pendingMarker = b2
-        pendingMarkerPos = start
-        pendingMarkerCodePos = pos
+        pendingMarker = secondByte
+        pendingMarkerPosition = start
+        pendingMarkerCodePosition = position
         return 0
     }
 
     fun consumeMarker(): Int {
         if (pendingMarker >= 0) {
-            val m = pendingMarker
+            val marker = pendingMarker
             pendingMarker = -1
-            pos = pendingMarkerCodePos + 1
-            return m
+            position = pendingMarkerCodePosition + 1
+            return marker
         }
-        var p = pos
-        while (p < data.size && data.u8(p) != 0xFF) p++
-        if (p >= data.size) return -1
-        while (p < data.size && data.u8(p) == 0xFF) p++
-        if (p >= data.size) return -1
-        val m = data.u8(p)
-        pos = p + 1
-        return m
+        var scanPosition = position
+        while (scanPosition < data.size && data.readUByte(scanPosition) != 0xFF) {
+            scanPosition++
+        }
+        if (scanPosition >= data.size) return -1
+        while (scanPosition < data.size && data.readUByte(scanPosition) == 0xFF) {
+            scanPosition++
+        }
+        if (scanPosition >= data.size) return -1
+        val marker = data.readUByte(scanPosition)
+        position = scanPosition + 1
+        return marker
     }
 
-    fun nextMarkerPos(): Int = if (pendingMarker >= 0) pendingMarkerPos else pos
+    fun nextMarkerPosition(): Int = if (pendingMarker >= 0) pendingMarkerPosition else position
 }
 
-class JpegComponent(val id: Int, val h: Int, val v: Int, val tq: Int) {
-    var dcTable = 0
-    var acTable = 0
-    var dcPred = 0
-    var blocksW = 0
-    var blocksH = 0
+class JpegComponent(
+    val identifier: Int,
+    val horizontalSampling: Int,
+    val verticalSampling: Int,
+    val quantizationTableId: Int,
+) {
+    var dcHuffmanTableIndex = 0
+    var acHuffmanTableIndex = 0
+    var dcPrediction = 0
+    var blockColumns = 0
+    var blockRows = 0
     var stride = 0
     var plane = IntArray(0)
 }
 
 class JpegDecoder(private val data: ByteArray) {
-    private val quant = Array(4) { IntArray(64) }
-    private val quantSet = BooleanArray(4)
-    private val dcTables = arrayOfNulls<JpegHuffman>(4)
-    private val acTables = arrayOfNulls<JpegHuffman>(4)
-    val comps = ArrayList<JpegComponent>()
+    private val quantizationTables = Array(4) { IntArray(64) }
+    private val quantizationTableSet = BooleanArray(4)
+    private val dcHuffmanTables = arrayOfNulls<JpegHuffman>(4)
+    private val acHuffmanTables = arrayOfNulls<JpegHuffman>(4)
+    val components = ArrayList<JpegComponent>()
     var width = 0
     var height = 0
-    var maxH = 1
-    var maxV = 1
-    var mcuW = 0
-    var mcuH = 0
+    var maximumHorizontalSampling = 1
+    var maximumVerticalSampling = 1
+    var mcuColumns = 0
+    var mcuRows = 0
     var restartInterval = 0
     var adobeTransform = -1
+    var scanDataStart = 0
 
     fun decode(): GrayImage {
-        var p = 2
-        while (p + 1 < data.size) {
-            while (p < data.size && data.u8(p) != 0xFF) p++
-            while (p < data.size && data.u8(p) == 0xFF) p++
-            if (p >= data.size) break
-            val marker = data.u8(p++)
+        var position = 2
+        while (position + 1 < data.size) {
+            while (position < data.size && data.readUByte(position) != 0xFF) position++
+            while (position < data.size && data.readUByte(position) == 0xFF) position++
+            if (position >= data.size) break
+            val marker = data.readUByte(position++)
             if (marker == 0xD9) break
             if (marker == 0x00 || marker == 0x01 || marker in 0xD0..0xD7) continue
-            if (p + 2 > data.size) break
-            val len = data.u16be(p)
-            if (len < 2) break
-            val segEnd = p + len
-            if (segEnd > data.size) break
+            if (position + 2 > data.size) break
+            val segmentLength = data.readUnsignedShortBigEndian(position)
+            if (segmentLength < 2) break
+            val segmentEnd = position + segmentLength
+            if (segmentEnd > data.size) break
             when (marker) {
-                0xC0, 0xC1 -> parseSof(p + 2, segEnd)
+                0xC0, 0xC1 -> parseStartOfFrame(position + 2, segmentEnd)
                 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF ->
                     error("jpeg: unsupported SOF marker 0x${marker.toString(16)}")
-                0xC4 -> parseDht(p + 2, segEnd)
-                0xDB -> parseDqt(p + 2, segEnd)
-                0xDD -> if (segEnd >= p + 4) restartInterval = data.u16be(p + 2)
+                0xC4 -> parseDefineHuffmanTable(position + 2, segmentEnd)
+                0xDB -> parseDefineQuantizationTable(position + 2, segmentEnd)
+                0xDD -> if (segmentEnd >= position + 4) {
+                    restartInterval = data.readUnsignedShortBigEndian(position + 2)
+                }
                 0xDA -> {
-                    sosDataStart = p + 2
-                    parseSos(p + 2, segEnd)
-                    val markerPos = decodeScan(segEnd)
-                    p = if (markerPos >= 0) markerPos else data.size
+                    scanDataStart = position + 2
+                    parseStartOfScan(position + 2, segmentEnd)
+                    val markerPosition = decodeScan(segmentEnd)
+                    position = if (markerPosition >= 0) markerPosition else data.size
                     continue
                 }
-                0xEE -> parseAdobe(p + 2, segEnd)
+                0xEE -> parseAdobe(position + 2, segmentEnd)
             }
-            p = segEnd
+            position = segmentEnd
         }
-        if (comps.isEmpty()) error("jpeg: missing SOF")
+        if (components.isEmpty()) error("jpeg: missing SOF")
         if (width <= 0 || height <= 0) error("jpeg: invalid dimensions ${width}x$height")
         return this.toGray()
     }
 
-    private fun parseSof(ds: Int, end: Int) {
-        if (ds + 6 > end) throw IllegalArgumentException("jpeg: bad SOF")
-        val precision = data.u8(ds)
-        val h = data.u16be(ds + 1)
-        val w = data.u16be(ds + 3)
-        val n = data.u8(ds + 5)
-        if (precision != 8 || w <= 0 || h <= 0 || n !in 1..4 || n == 2) {
+    private fun parseStartOfFrame(dataStart: Int, dataEnd: Int) {
+        if (dataStart + 6 > dataEnd) throw IllegalArgumentException("jpeg: bad SOF")
+        val precision = data.readUByte(dataStart)
+        val frameHeight = data.readUnsignedShortBigEndian(dataStart + 1)
+        val frameWidth = data.readUnsignedShortBigEndian(dataStart + 3)
+        val componentCount = data.readUByte(dataStart + 5)
+        if (precision != 8 || frameWidth <= 0 || frameHeight <= 0 ||
+            componentCount !in 1..4 || componentCount == 2
+        ) {
             throw IllegalArgumentException("jpeg: unsupported SOF")
         }
-        if (ds + 6 + n * 3 > end) throw IllegalArgumentException("jpeg: bad SOF")
-        width = w
-        height = h
-        comps.clear()
-        maxH = 1
-        maxV = 1
-        for (i in 0 until n) {
-            val q = ds + 6 + i * 3
-            val id = data.u8(q)
-            val hv = data.u8(q + 1)
-            val hh = hv shr 4
-            val vv = hv and 15
-            val tq = data.u8(q + 2)
-            if (hh !in 1..4 || vv !in 1..4 || tq > 3) throw IllegalArgumentException("jpeg: bad component")
-            comps.add(JpegComponent(id, hh, vv, tq))
-            if (hh > maxH) maxH = hh
-            if (vv > maxV) maxV = vv
+        if (dataStart + 6 + componentCount * 3 > dataEnd) {
+            throw IllegalArgumentException("jpeg: bad SOF")
         }
-        mcuW = (width + 8 * maxH - 1) / (8 * maxH)
-        mcuH = (height + 8 * maxV - 1) / (8 * maxV)
-        for (c in comps) {
-            c.blocksW = mcuW * c.h
-            c.blocksH = mcuH * c.v
-            c.stride = c.blocksW * 8
-            c.plane = IntArray(c.stride * c.blocksH * 8)
-        }
-    }
-
-    private fun parseDqt(ds: Int, end: Int) {
-        var p = ds
-        while (p < end) {
-            val pqTq = data.u8(p++)
-            val pq = pqTq shr 4
-            val tq = pqTq and 15
-            if (pq > 1 || tq > 3) throw IllegalArgumentException("jpeg: bad DQT")
-            for (i in 0 until 64) {
-                val v = if (pq == 0) {
-                    if (p >= end) throw IllegalArgumentException("jpeg: truncated DQT")
-                    data.u8(p++)
-                } else {
-                    if (p + 2 > end) throw IllegalArgumentException("jpeg: truncated DQT")
-                    val x = data.u16be(p)
-                    p += 2
-                    x
-                }
-                quant[tq][ZIGZAG[i]] = v
+        width = frameWidth
+        height = frameHeight
+        components.clear()
+        maximumHorizontalSampling = 1
+        maximumVerticalSampling = 1
+        for (componentIndex in 0 until componentCount) {
+            val componentPosition = dataStart + 6 + componentIndex * 3
+            val identifier = data.readUByte(componentPosition)
+            val samplingFactors = data.readUByte(componentPosition + 1)
+            val horizontalSampling = samplingFactors shr 4
+            val verticalSampling = samplingFactors and 15
+            val quantizationTableId = data.readUByte(componentPosition + 2)
+            if (horizontalSampling !in 1..4 || verticalSampling !in 1..4 ||
+                quantizationTableId > 3
+            ) {
+                throw IllegalArgumentException("jpeg: bad component")
             }
-            quantSet[tq] = true
+            components.add(
+                JpegComponent(
+                    identifier,
+                    horizontalSampling,
+                    verticalSampling,
+                    quantizationTableId,
+                )
+            )
+            if (horizontalSampling > maximumHorizontalSampling) {
+                maximumHorizontalSampling = horizontalSampling
+            }
+            if (verticalSampling > maximumVerticalSampling) {
+                maximumVerticalSampling = verticalSampling
+            }
+        }
+        mcuColumns = (width + 8 * maximumHorizontalSampling - 1) /
+            (8 * maximumHorizontalSampling)
+        mcuRows = (height + 8 * maximumVerticalSampling - 1) /
+            (8 * maximumVerticalSampling)
+        for (component in components) {
+            component.blockColumns = mcuColumns * component.horizontalSampling
+            component.blockRows = mcuRows * component.verticalSampling
+            component.stride = component.blockColumns * 8
+            component.plane = IntArray(component.stride * component.blockRows * 8)
         }
     }
 
-    private fun parseDht(ds: Int, end: Int) {
-        var p = ds
-        while (p < end) {
-            val tcTh = data.u8(p++)
-            val tc = tcTh shr 4
-            val th = tcTh and 15
-            if (tc > 1 || th > 3) throw IllegalArgumentException("jpeg: bad DHT")
-            if (p + 16 > end) throw IllegalArgumentException("jpeg: truncated DHT")
+    private fun parseDefineQuantizationTable(dataStart: Int, dataEnd: Int) {
+        var position = dataStart
+        while (position < dataEnd) {
+            val precisionAndTableId = data.readUByte(position++)
+            val precision = precisionAndTableId shr 4
+            val tableId = precisionAndTableId and 15
+            if (precision > 1 || tableId > 3) {
+                throw IllegalArgumentException("jpeg: bad DQT")
+            }
+            for (index in 0 until 64) {
+                val value = if (precision == 0) {
+                    if (position >= dataEnd) {
+                        throw IllegalArgumentException("jpeg: truncated DQT")
+                    }
+                    data.readUByte(position++)
+                } else {
+                    if (position + 2 > dataEnd) {
+                        throw IllegalArgumentException("jpeg: truncated DQT")
+                    }
+                    val quantizationValue = data.readUnsignedShortBigEndian(position)
+                    position += 2
+                    quantizationValue
+                }
+                quantizationTables[tableId][ZIGZAG_ORDER[index]] = value
+            }
+            quantizationTableSet[tableId] = true
+        }
+    }
+
+    private fun parseDefineHuffmanTable(dataStart: Int, dataEnd: Int) {
+        var position = dataStart
+        while (position < dataEnd) {
+            val tableClassAndId = data.readUByte(position++)
+            val tableClass = tableClassAndId shr 4
+            val tableId = tableClassAndId and 15
+            if (tableClass > 1 || tableId > 3) {
+                throw IllegalArgumentException("jpeg: bad DHT")
+            }
+            if (position + 16 > dataEnd) {
+                throw IllegalArgumentException("jpeg: truncated DHT")
+            }
             val counts = IntArray(16)
             var total = 0
-            for (i in 0 until 16) {
-                counts[i] = data.u8(p++)
-                total += counts[i]
+            for (index in 0 until 16) {
+                counts[index] = data.readUByte(position++)
+                total += counts[index]
             }
-            if (total > 256 || p + total > end) throw IllegalArgumentException("jpeg: bad DHT size")
-            val symbols = IntArray(total) { data.u8(p++) }
+            if (total > 256 || position + total > dataEnd) {
+                throw IllegalArgumentException("jpeg: bad DHT size")
+            }
+            val symbols = IntArray(total) { data.readUByte(position++) }
             val table = JpegHuffman(counts, symbols)
-            if (tc == 0) dcTables[th] = table else acTables[th] = table
+            if (tableClass == 0) dcHuffmanTables[tableId] = table
+            else acHuffmanTables[tableId] = table
         }
     }
 
-    private fun parseAdobe(ds: Int, end: Int) {
-        if (end - ds < 12) return
-        if (data.u8(ds) != 'A'.code || data.u8(ds + 1) != 'd'.code ||
-            data.u8(ds + 2) != 'o'.code || data.u8(ds + 3) != 'b'.code ||
-            data.u8(ds + 4) != 'e'.code
+    private fun parseAdobe(dataStart: Int, dataEnd: Int) {
+        if (dataEnd - dataStart < 12) return
+        if (data.readUByte(dataStart) != 'A'.code ||
+            data.readUByte(dataStart + 1) != 'd'.code ||
+            data.readUByte(dataStart + 2) != 'o'.code ||
+            data.readUByte(dataStart + 3) != 'b'.code ||
+            data.readUByte(dataStart + 4) != 'e'.code
         ) return
-        adobeTransform = data.u8(ds + 11)
+        adobeTransform = data.readUByte(dataStart + 11)
     }
 
-    private fun parseSos(ds: Int, end: Int) {
-        if (ds >= end) throw IllegalArgumentException("jpeg: bad SOS")
-        val ns = data.u8(ds)
-        if (ns !in 1..comps.size || ds + 1 + ns * 2 + 3 > end) {
+    private fun parseStartOfScan(dataStart: Int, dataEnd: Int) {
+        if (dataStart >= dataEnd) throw IllegalArgumentException("jpeg: bad SOS")
+        val componentCount = data.readUByte(dataStart)
+        if (componentCount !in 1..components.size ||
+            dataStart + 1 + componentCount * 2 + 3 > dataEnd
+        ) {
             throw IllegalArgumentException("jpeg: bad SOS size")
         }
-        for (i in 0 until ns) {
-            val id = data.u8(ds + 1 + i * 2)
-            val tables = data.u8(ds + 2 + i * 2)
-            val c = comps.firstOrNull { it.id == id } ?: throw IllegalArgumentException("jpeg: unknown component")
-            c.dcTable = tables shr 4
-            c.acTable = tables and 15
-            if (c.dcTable > 3 || c.acTable > 3) throw IllegalArgumentException("jpeg: bad table id")
+        for (componentIndex in 0 until componentCount) {
+            val identifier = data.readUByte(dataStart + 1 + componentIndex * 2)
+            val tableSelectors = data.readUByte(dataStart + 2 + componentIndex * 2)
+            val component = components.firstOrNull { it.identifier == identifier }
+                ?: throw IllegalArgumentException("jpeg: unknown component")
+            component.dcHuffmanTableIndex = tableSelectors shr 4
+            component.acHuffmanTableIndex = tableSelectors and 15
+            if (component.dcHuffmanTableIndex > 3 || component.acHuffmanTableIndex > 3) {
+                throw IllegalArgumentException("jpeg: bad table id")
+            }
         }
-        val ss = data.u8(ds + 1 + ns * 2)
-        val se = data.u8(ds + 2 + ns * 2)
-        val ahAl = data.u8(ds + 3 + ns * 2)
-        if (ss != 0 || se != 63 || ahAl != 0) throw IllegalArgumentException("jpeg: progressive scan unsupported")
+        val spectralStart = data.readUByte(dataStart + 1 + componentCount * 2)
+        val spectralEnd = data.readUByte(dataStart + 2 + componentCount * 2)
+        val successiveApproximation =
+            data.readUByte(dataStart + 3 + componentCount * 2)
+        if (spectralStart != 0 || spectralEnd != 63 || successiveApproximation != 0) {
+            throw IllegalArgumentException("jpeg: progressive scan unsupported")
+        }
     }
 
     private fun decodeScan(entropyStart: Int): Int {
-        // parseSos 已校验头部；这里重新读取分量列表。
-        val ds = sosDataStart
-        val ns = data.u8(ds)
-        val scanComps = ArrayList<JpegComponent>(ns)
-        for (i in 0 until ns) {
-            val id = data.u8(ds + 1 + i * 2)
-            scanComps.add(comps.first { it.id == id })
+        // parseStartOfScan 已校验头部；这里重新读取分量列表。
+        val dataStart = scanDataStart
+        val componentCount = data.readUByte(dataStart)
+        val scanComponents = ArrayList<JpegComponent>(componentCount)
+        for (componentIndex in 0 until componentCount) {
+            val identifier = data.readUByte(dataStart + 1 + componentIndex * 2)
+            scanComponents.add(components.first { it.identifier == identifier })
         }
-        val bits = JpegBits(data, entropyStart)
-        for (c in comps) c.dcPred = 0
+        val bitReader = JpegBits(data, entropyStart)
+        for (component in components) component.dcPrediction = 0
 
         var mcuCount = 0
-        val coeff = IntArray(64)
+        val coefficients = IntArray(64)
 
-        fun afterMcu(): Boolean {
+        fun afterMinimumCodedUnit(): Boolean {
             mcuCount++
             if (restartInterval > 0 && mcuCount % restartInterval == 0) {
-                bits.align()
-                val m = bits.consumeMarker()
-                if (m !in 0xD0..0xD7) return false
-                for (c in comps) c.dcPred = 0
+                bitReader.align()
+                val marker = bitReader.consumeMarker()
+                if (marker !in 0xD0..0xD7) return false
+                for (component in components) component.dcPrediction = 0
             }
             return true
         }
 
-        if (ns == 1 && comps.size > 1) {
-            val c = scanComps[0]
-            val actualW = (width * c.h + maxH - 1) / maxH
-            val actualH = (height * c.v + maxV - 1) / maxV
-            val bw = (actualW + 7) / 8
-            val bh = (actualH + 7) / 8
-            for (by in 0 until bh) {
-                for (bx in 0 until bw) {
-                    decodeBlock(c, bx, by, bits, coeff)
-                    if (!afterMcu()) return bits.nextMarkerPos()
+        if (componentCount == 1 && components.size > 1) {
+            val component = scanComponents[0]
+            val actualWidth =
+                (width * component.horizontalSampling + maximumHorizontalSampling - 1) /
+                    maximumHorizontalSampling
+            val actualHeight =
+                (height * component.verticalSampling + maximumVerticalSampling - 1) /
+                    maximumVerticalSampling
+            val blockColumns = (actualWidth + 7) / 8
+            val blockRows = (actualHeight + 7) / 8
+            for (blockRow in 0 until blockRows) {
+                for (blockColumn in 0 until blockColumns) {
+                    decodeBlock(component, blockColumn, blockRow, bitReader, coefficients)
+                    if (!afterMinimumCodedUnit()) return bitReader.nextMarkerPosition()
                 }
             }
         } else {
-            for (my in 0 until mcuH) {
-                for (mx in 0 until mcuW) {
-                    for (c in scanComps) {
-                        for (v in 0 until c.v) {
-                            for (h in 0 until c.h) {
-                                decodeBlock(c, mx * c.h + h, my * c.v + v, bits, coeff)
+            for (mcuRow in 0 until mcuRows) {
+                for (mcuColumn in 0 until mcuColumns) {
+                    for (component in scanComponents) {
+                        for (verticalIndex in 0 until component.verticalSampling) {
+                            for (horizontalIndex in 0 until component.horizontalSampling) {
+                                decodeBlock(
+                                    component,
+                                    mcuColumn * component.horizontalSampling + horizontalIndex,
+                                    mcuRow * component.verticalSampling + verticalIndex,
+                                    bitReader,
+                                    coefficients,
+                                )
                             }
                         }
                     }
-                    if (!afterMcu()) return bits.nextMarkerPos()
+                    if (!afterMinimumCodedUnit()) return bitReader.nextMarkerPosition()
                 }
             }
         }
-        return bits.nextMarkerPos()
+        return bitReader.nextMarkerPosition()
     }
 
-    var sosDataStart = 0
+    private fun decodeBlock(
+        component: JpegComponent,
+        blockColumn: Int,
+        blockRow: Int,
+        bitReader: JpegBits,
+        coefficients: IntArray,
+    ) {
+        coefficients.fill(0)
+        val dcTable = dcHuffmanTables[component.dcHuffmanTableIndex]
+            ?: throw IllegalArgumentException("jpeg: missing DC table")
+        val acTable = acHuffmanTables[component.acHuffmanTableIndex]
+            ?: throw IllegalArgumentException("jpeg: missing AC table")
+        val quantizationTable = quantizationTables[component.quantizationTableId]
+        if (!quantizationTableSet[component.quantizationTableId]) {
+            throw IllegalArgumentException("jpeg: missing quant table")
+        }
 
-    private fun decodeBlock(c: JpegComponent, bx: Int, by: Int, bits: JpegBits, coeff: IntArray) {
-        coeff.fill(0)
-        val dc = dcTables[c.dcTable] ?: throw IllegalArgumentException("jpeg: missing DC table")
-        val ac = acTables[c.acTable] ?: throw IllegalArgumentException("jpeg: missing AC table")
-        val q = quant[c.tq]
-        if (!quantSet[c.tq]) throw IllegalArgumentException("jpeg: missing quant table")
+        val dcCategory = dcTable.decode(bitReader)
+        if (dcCategory > 11) throw IllegalArgumentException("jpeg: bad DC category")
+        val difference =
+            if (dcCategory == 0) 0 else extend(bitReader.readBits(dcCategory), dcCategory)
+        component.dcPrediction += difference
+        coefficients[0] = component.dcPrediction * quantizationTable[0]
 
-        val dcCat = dc.decode(bits)
-        if (dcCat > 11) throw IllegalArgumentException("jpeg: bad DC category")
-        val diff = if (dcCat == 0) 0 else extend(bits.bits(dcCat), dcCat)
-        c.dcPred += diff
-        coeff[0] = c.dcPred * q[0]
-
-        var k = 1
-        while (k < 64) {
-            val rs = ac.decode(bits)
-            val r = rs shr 4
-            val s = rs and 15
-            if (s == 0) {
-                if (r == 15) {
-                    k += 16
+        var coefficientIndex = 1
+        while (coefficientIndex < 64) {
+            val runAndSize = acTable.decode(bitReader)
+            val runLength = runAndSize shr 4
+            val size = runAndSize and 15
+            if (size == 0) {
+                if (runLength == 15) {
+                    coefficientIndex += 16
                     continue
                 }
                 break
             }
-            if (s > 10) throw IllegalArgumentException("jpeg: bad AC size")
-            k += r
-            if (k > 63) break
-            val v = extend(bits.bits(s), s)
-            val z = ZIGZAG[k]
-            coeff[z] = v * q[z]
-            k++
+            if (size > 10) throw IllegalArgumentException("jpeg: bad AC size")
+            coefficientIndex += runLength
+            if (coefficientIndex > 63) break
+            val value = extend(bitReader.readBits(size), size)
+            val zigzagIndex = ZIGZAG_ORDER[coefficientIndex]
+            coefficients[zigzagIndex] = value * quantizationTable[zigzagIndex]
+            coefficientIndex++
         }
-        idct(coeff, c, bx * 8, by * 8)
+        idct(coefficients, component, blockColumn * 8, blockRow * 8)
     }
 
-    private fun idct(coeff: IntArray, c: JpegComponent, ox: Int, oy: Int) {
-        val tmp = DoubleArray(64)
-        for (y in 0 until 8) {
-            val row = y * 8
-            for (x in 0 until 8) {
-                var s = 0.0
-                val basis = IDCT_BASIS[x]
-                for (u in 0 until 8) s += basis[u] * coeff[row + u]
-                tmp[row + x] = s
+    private fun idct(
+        coefficients: IntArray,
+        component: JpegComponent,
+        outputX: Int,
+        outputY: Int,
+    ) {
+        val temporary = DoubleArray(64)
+        for (row in 0 until 8) {
+            val rowOffset = row * 8
+            for (column in 0 until 8) {
+                var sum = 0.0
+                val basis = INVERSE_DCT_BASIS[column]
+                for (frequencyIndex in 0 until 8) {
+                    sum += basis[frequencyIndex] * coefficients[rowOffset + frequencyIndex]
+                }
+                temporary[rowOffset + column] = sum
             }
         }
-        for (x in 0 until 8) {
-            for (y in 0 until 8) {
-                var s = 0.0
-                val basis = IDCT_BASIS[y]
-                for (v in 0 until 8) s += basis[v] * tmp[v * 8 + x]
-                val value = (s.roundToInt() + 128).coerceIn(0, 255)
-                c.plane[(oy + y) * c.stride + ox + x] = value
+        for (column in 0 until 8) {
+            for (row in 0 until 8) {
+                var sum = 0.0
+                val basis = INVERSE_DCT_BASIS[row]
+                for (frequencyIndex in 0 until 8) {
+                    sum += basis[frequencyIndex] * temporary[frequencyIndex * 8 + column]
+                }
+                val value = (sum.roundToInt() + 128).coerceIn(0, 255)
+                component.plane[(outputY + row) * component.stride + outputX + column] = value
             }
         }
     }
 
-    private fun extend(v: Int, n: Int): Int =
-        if (n == 0) 0 else if (v < (1 shl (n - 1))) v - (1 shl n) + 1 else v
+    private fun extend(value: Int, bitCount: Int): Int =
+        if (bitCount == 0) 0
+        else if (value < (1 shl (bitCount - 1))) value - (1 shl bitCount) + 1
+        else value
 
-    fun sample(c: JpegComponent, x: Int, y: Int): Int {
-        val sx = (x * c.h / maxH).coerceIn(0, c.blocksW * 8 - 1)
-        val sy = (y * c.v / maxV).coerceIn(0, c.blocksH * 8 - 1)
-        return c.plane[sy * c.stride + sx]
+    fun sample(component: JpegComponent, sampleX: Int, sampleY: Int): Int {
+        val sourceX =
+            (sampleX * component.horizontalSampling / maximumHorizontalSampling)
+                .coerceIn(0, component.blockColumns * 8 - 1)
+        val sourceY =
+            (sampleY * component.verticalSampling / maximumVerticalSampling)
+                .coerceIn(0, component.blockRows * 8 - 1)
+        return component.plane[sourceY * component.stride + sourceX]
     }
 }

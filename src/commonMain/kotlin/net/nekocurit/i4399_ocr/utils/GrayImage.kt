@@ -12,40 +12,51 @@ class GrayImage(val width: Int, val height: Int, val pixels: ByteArray) {
 
     companion object {
         fun JpegDecoder.toGray(): GrayImage {
-            val out = ByteArray(width * height)
-            if (comps.size == 1) {
-                val c = comps[0]
-                for (y in 0 until height) for (x in 0 until width) {
-                    out[y * width + x] = sample(c, x, y).toByte()
+            val output = ByteArray(width * height)
+            if (components.size == 1) {
+                val component = components[0]
+                for (row in 0 until height) {
+                    for (column in 0 until width) {
+                        output[row * width + column] = sample(component, column, row).toByte()
+                    }
                 }
-                return GrayImage(width, height, out)
+                return GrayImage(width, height, output)
             }
-            if (comps.size != 3) throw IllegalArgumentException("jpeg: unsupported component count")
-            val c0 = comps[0]
-            val c1 = comps[1]
-            val c2 = comps[2]
+            if (components.size != 3) {
+                throw IllegalArgumentException("jpeg: unsupported component count")
+            }
+            val component0 = components[0]
+            val component1 = components[1]
+            val component2 = components[2]
             if (adobeTransform == 0) {
-                for (y in 0 until height) for (x in 0 until width) {
-                    out[y * width + x] = rgbToGray(sample(c0, x, y), sample(c1, x, y), sample(c2, x, y)).toByte()
+                for (row in 0 until height) {
+                    for (column in 0 until width) {
+                        output[row * width + column] = rgbToGray(
+                            sample(component0, column, row),
+                            sample(component1, column, row),
+                            sample(component2, column, row),
+                        ).toByte()
+                    }
                 }
-                return GrayImage(width, height, out)
+                return GrayImage(width, height, output)
             }
-            for (y in 0 until height) {
-                for (x in 0 until width) {
-                    val yy = sample(c0, x, y).toDouble()
-                    val cb = sample(c1, x, y) - 128.0
-                    val cr = sample(c2, x, y) - 128.0
-                    val r = (yy + 1.402 * cr).roundToInt().coerceIn(0, 255)
-                    val g = (yy - 0.344136 * cb - 0.714136 * cr).roundToInt().coerceIn(0, 255)
-                    val b = (yy + 1.772 * cb).roundToInt().coerceIn(0, 255)
-                    out[y * width + x] = rgbToGray(r, g, b).toByte()
+            for (row in 0 until height) {
+                for (column in 0 until width) {
+                    val luma = sample(component0, column, row).toDouble()
+                    val chromaBlue = sample(component1, column, row) - 128.0
+                    val chromaRed = sample(component2, column, row) - 128.0
+                    val red = (luma + 1.402 * chromaRed).roundToInt().coerceIn(0, 255)
+                    val green = (luma - 0.344136 * chromaBlue - 0.714136 * chromaRed)
+                        .roundToInt().coerceIn(0, 255)
+                    val blue = (luma + 1.772 * chromaBlue).roundToInt().coerceIn(0, 255)
+                    output[row * width + column] = rgbToGray(red, green, blue).toByte()
                 }
             }
-            return GrayImage(width, height, out)
+            return GrayImage(width, height, output)
         }
 
         /** BT.601 灰度转换，常量与 C 版 Windows GDI+ 路径一致。 */
-        internal fun rgbToGray(r: Int, g: Int, b: Int): Int =
-            (r * 299 + g * 587 + b * 114) / 1000
+        internal fun rgbToGray(red: Int, green: Int, blue: Int): Int =
+            (red * 299 + green * 587 + blue * 114) / 1000
     }
 }
