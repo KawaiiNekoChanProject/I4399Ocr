@@ -1,8 +1,8 @@
 <div align="center"><h1>I4399Ocr</h1></div>
 
-WPLauncherHelper 是一个使用 KMP (kotlin 跨平台) 实现的 4399 验证码识别库
+I4399 是一个使用 KMP (kotlin 跨平台) 实现的 4399 验证码识别库
 
-从由易语言编写的 `WmCode.dll` 移植, 使用kotlin重写提升跨平台兼容性, 并去除了加密模型以提升性能
+从由易语言编写的 `WmCode.dll` 移植, 使用kotlin重写提升跨平台兼容性, 并去除了加密&重构模型格式以提升性能
 
 ## 作为库使用
 
