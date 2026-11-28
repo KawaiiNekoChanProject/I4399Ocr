@@ -5,8 +5,9 @@ plugins {
     alias(libs.plugins.signing)
 }
 
-group = "net.nekocurit.i4399_ocr"
+group = project.property("group") as String
 version = project.property("version") as String
+val repo = project.property("repo") as String
 
 repositories {
     mavenCentral()
@@ -62,11 +63,11 @@ mavenPublishing {
         }
     }
     if (privateKey != null) signAllPublications()
-    coordinates("io.github.kawaiinekochanproject", project.name, project.version.toString())
+    coordinates(rootProject.group.toString(), project.name, project.version.toString())
     pom {
         name.set("I4399Ocr")
         description.set("A dedicated graphics recognition library for 4399.")
-        url.set("https://github.com/KawaiiNekoChanProject/I4399Ocr")
+        url.set("https://github.com/$repo")
         licenses {
             license {
                 name.set("Zero-Clause BSD License")
@@ -80,9 +81,9 @@ mavenPublishing {
             }
         }
         scm {
-            connection.set("scm:git:https://github.com/KawaiiNekoChanProject/I4399Ocr.git")
-            developerConnection.set("scm:git:ssh://git@github.com/KawaiiNekoChanProject/I4399Ocr.git")
-            url.set("https://github.com/KawaiiNekoChanProject/I4399Ocr")
+            connection.set("scm:git:https://github.com/$repo.git")
+            developerConnection.set("scm:git:ssh://git@github.com/$repo.git")
+            url.set("https://github.com/$repo")
         }
     }
 }
