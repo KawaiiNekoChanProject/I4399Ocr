@@ -9,7 +9,7 @@ object I4399Ocr {
     /**
      * 识别图片字节
      *
-     * @param image 图片字节, 仅支持 `jpeg`
+     * @param image 仅支持 4399 服务端下发的图片 (8位基线, 三分量 4:2:0 JPEG)
      */
     fun ocr(image: ByteArray): String = ocr(decodeJpeg(image))
 
